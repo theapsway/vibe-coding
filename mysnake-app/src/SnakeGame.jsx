@@ -4,6 +4,23 @@ const BOARD_SIZE = 20;
 const INITIAL_SNAKE = [{ x: 8, y: 8 }];
 const INITIAL_DIRECTION = { x: 1, y: 0 };
 const SPEED = 200;
+const GOLD_FOOD_SPAWN_CHANCE = 0.05; // 5% chance per food eaten (vs 100% before)
+const GOLD_FOOD_DURATION = 6000; // 6 seconds in milliseconds
+
+// CSS for blinking food animation
+const foodBlinkKeyframes = `
+  @keyframes foodBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+`;
+
+// Inject keyframes into the document
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.textContent = foodBlinkKeyframes;
+  document.head.appendChild(style);
+}
 
 function generateFood(snake) {
   let newFood;
@@ -16,13 +33,29 @@ function generateFood(snake) {
   return newFood;
 }
 
+function generateGoldFood(snake, regularFood) {
+  let newGoldFood;
+  do {
+    newGoldFood = {
+      x: Math.floor(Math.random() * BOARD_SIZE),
+      y: Math.floor(Math.random() * BOARD_SIZE),
+    };
+  } while (
+    snake.some(segment => segment.x === newGoldFood.x && segment.y === newGoldFood.y) ||
+    (regularFood.x === newGoldFood.x && regularFood.y === newGoldFood.y)
+  );
+  return newGoldFood;
+}
+
 export default function SnakeGame() {
   const [snake, setSnake] = useState(INITIAL_SNAKE);
   const [food, setFood] = useState(() => generateFood(INITIAL_SNAKE));
+  const [goldFood, setGoldFood] = useState(null);
   const [direction, setDirection] = useState(INITIAL_DIRECTION);
   const [gameOver, setGameOver] = useState(false);
   const [score, setScore] = useState(0); // Track food eaten
   const boardRef = useRef(null);
+  const goldFoodTimerRef = useRef(null);
 
   const handleKeyDown = (e) => {
     switch (e.key) {
@@ -53,25 +86,53 @@ export default function SnakeGame() {
 
     const moveSnake = () => {
       setSnake(prevSnake => {
-        const newHead = { 
+        let newHead = { 
           x: prevSnake[0].x + direction.x, 
           y: prevSnake[0].y + direction.y 
         };
 
-        if (
-          newHead.x < 0 || newHead.x >= BOARD_SIZE ||
-          newHead.y < 0 || newHead.y >= BOARD_SIZE ||
-          prevSnake.some(segment => segment.x === newHead.x && segment.y === newHead.y)
-        ) {
+        // Wrap around walls instead of ending game
+        newHead.x = (newHead.x + BOARD_SIZE) % BOARD_SIZE;
+        newHead.y = (newHead.y + BOARD_SIZE) % BOARD_SIZE;
+
+        // Check self collision only
+        if (prevSnake.some(segment => segment.x === newHead.x && segment.y === newHead.y)) {
           setGameOver(true);
           return prevSnake;
         }
 
-        const newSnake = [newHead, ...prevSnake];
+        let newSnake = [newHead, ...prevSnake];
 
+        // Check regular food collision
         if (newHead.x === food.x && newHead.y === food.y) {
           setFood(generateFood(newSnake));
           setScore(prev => prev + 1); // Increase score
+          
+          // Generate gold food with low probability if score > 20
+          if (score + 1 > 20 && !goldFood && Math.random() < GOLD_FOOD_SPAWN_CHANCE) {
+            const newGoldFood = generateGoldFood(newSnake, food);
+            setGoldFood(newGoldFood);
+            
+            // Clear any existing timer and set a new one
+            if (goldFoodTimerRef.current) {
+              clearTimeout(goldFoodTimerRef.current);
+            }
+            goldFoodTimerRef.current = setTimeout(() => {
+              setGoldFood(null);
+              goldFoodTimerRef.current = null;
+            }, GOLD_FOOD_DURATION);
+          }
+        } else if (goldFood && newHead.x === goldFood.x && newHead.y === goldFood.y) {
+          // Check gold food collision - shrink snake by 4 segments
+          const shrinkAmount = Math.min(4, newSnake.length - 1); // Don't shrink below 1 segment
+          newSnake = newSnake.slice(0, newSnake.length - shrinkAmount);
+          setGoldFood(null); // Remove gold food after eating
+          
+          // Clear the timer since gold food was eaten
+          if (goldFoodTimerRef.current) {
+            clearTimeout(goldFoodTimerRef.current);
+            goldFoodTimerRef.current = null;
+          }
         } else {
           newSnake.pop();
         }
@@ -82,14 +143,21 @@ export default function SnakeGame() {
 
     const interval = setInterval(moveSnake, SPEED);
     return () => clearInterval(interval);
-  }, [direction, food, gameOver]);
+  }, [direction, food, goldFood, gameOver, score]);
 
   const restartGame = () => {
     setSnake(INITIAL_SNAKE);
     setDirection(INITIAL_DIRECTION);
     setFood(generateFood(INITIAL_SNAKE));
+    setGoldFood(null);
     setGameOver(false);
     setScore(0);
+    
+    // Clear any pending gold food timer
+    if (goldFoodTimerRef.current) {
+      clearTimeout(goldFoodTimerRef.current);
+      goldFoodTimerRef.current = null;
+    }
   };
 
   return (
@@ -118,6 +186,8 @@ export default function SnakeGame() {
           gap: '1px',
           background: '#333',
           marginBottom: '20px',
+          border: '8px solid #000',
+          boxShadow: '0 0 10px rgba(0, 0, 0, 0.5)',
         }}
       >
         {Array.from({ length: BOARD_SIZE * BOARD_SIZE }).map((_, idx) => {
@@ -126,6 +196,7 @@ export default function SnakeGame() {
 
           const isSnake = snake.some(segment => segment.x === x && segment.y === y);
           const isFood = food.x === x && food.y === y;
+          const isGoldFood = goldFood && goldFood.x === x && goldFood.y === y;
 
           return (
             <div
@@ -133,7 +204,8 @@ export default function SnakeGame() {
               style={{
                 width: 20,
                 height: 20,
-                backgroundColor: isSnake ? 'green' : isFood ? 'red' : '#eee',
+                backgroundColor: isSnake ? 'green' : isGoldFood ? 'gold' : isFood ? 'red' : '#eee',
+                animation: (isFood || isGoldFood) ? 'foodBlink 1s ease-in-out infinite' : 'none',
               }}
             />
           );
